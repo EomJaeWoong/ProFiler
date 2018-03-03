@@ -1,5 +1,8 @@
 ﻿#include "stdafx.h"
 
+
+CProfiler *CProfiler::_pProfiler = NULL;
+
 ///////////////////////////////////////////////////////////////////////
 // 생성자
 ///////////////////////////////////////////////////////////////////////
@@ -13,11 +16,15 @@ CProfiler::CProfiler()
 
 	InitializeSRWLock(&_srwProfilerLock);
 
-	///////////////////////////////////////////////////////////////////
-	// 샘플 쓰레드 초기화
-	///////////////////////////////////////////////////////////////////
 	for (int iCnt = 0; iCnt < eMAX_THREAD_SAMPlE; iCnt++)
 		_stProfileThread[iCnt].lThreadID = -1;
+	
+	///////////////////////////////////////////////////////////////////
+	// TLS Alloc
+	///////////////////////////////////////////////////////////////////
+	_dwTlsIndex = TlsAlloc();
+	if (TLS_OUT_OF_INDEXES == _dwTlsIndex)
+		_exit(-1);
 }
 
 ///////////////////////////////////////////////////////////////////////
@@ -39,9 +46,16 @@ bool			CProfiler::ProfileBegin(WCHAR *pwSampleName)
 	st_SAMPLE		*pSample = nullptr;
 
 	///////////////////////////////////////////////////////////////////
-	// 해당 샘플 얻고 카운터 측정
+	// 샘플 얻기
 	///////////////////////////////////////////////////////////////////
 	GetSample(pwSampleName, &pSample);
+	if (nullptr == pSample)
+		return false;
+
+
+	///////////////////////////////////////////////////////////////////
+	// 시간 측정 시작
+	///////////////////////////////////////////////////////////////////
 	QueryPerformanceCounter(&liStartTime);
 
 	///////////////////////////////////////////////////////////////////
@@ -60,13 +74,20 @@ bool			CProfiler::ProfileEnd(WCHAR *pwSampleName)
 {
 	LARGE_INTEGER	liEndTime, liSampleTime;
 	st_SAMPLE		*pSample = nullptr;
+	DWORD			dwTlsIndex = -1;
 
 	///////////////////////////////////////////////////////////////////
 	// 카운터 측정
 	///////////////////////////////////////////////////////////////////
 	QueryPerformanceCounter(&liEndTime);
 
+	///////////////////////////////////////////////////////////////////
+	// 샘플 얻기
+	///////////////////////////////////////////////////////////////////
 	GetSample(pwSampleName, &pSample);
+	if (nullptr == pSample)
+		return false;
+
 
 	///////////////////////////////////////////////////////////////////
 	// 시간 구하기
@@ -106,101 +127,79 @@ bool			CProfiler::ProfileEnd(WCHAR *pwSampleName)
 
 
 
-
 ///////////////////////////////////////////////////////////////////////
 // 샘플 얻기
 ///////////////////////////////////////////////////////////////////////
 bool			CProfiler::GetSample(WCHAR *pwSampleName, st_SAMPLE **pOutSample)
 {
-	///////////////////////////////////////////////////////////////////
-	// 쓰레드 ID 얻기
-	///////////////////////////////////////////////////////////////////
-	int iIndex = GetThreadSampleIndex();
+	st_SAMPLE *pSample;
 
 	///////////////////////////////////////////////////////////////////
-	// 등록된 쓰레드가 아닐 때
+	// 해당 쓰레드의 TLS Index를 얻음
+	// 셋팅되어 있지 않다면 샘플값을 세팅함
 	///////////////////////////////////////////////////////////////////
-	if (-1 == iIndex)
+	pSample = (st_SAMPLE *)TlsGetValue(_dwTlsIndex);
+	if (nullptr == pSample)
 	{
+		pSample = new st_SAMPLE[eMAX_SAMPLE];
+
 		///////////////////////////////////////////////////////////////
-		// 쓰레드 등록이 안되어있을 경우 등록하기
+		// 샘플 배열 초기화
 		///////////////////////////////////////////////////////////////
-		AcquireSRWLockExclusive(&_srwProfilerLock);
-		for (iIndex = 0; iIndex < eMAX_THREAD_SAMPlE; iIndex++)
-		{
-			if (-1 == _stProfileThread[iIndex].lThreadID)
-			{
-				_stProfileThread[iIndex].lThreadID = GetCurrentThreadId();
-				break;
-			}
-		}
-		ReleaseSRWLockExclusive(&_srwProfilerLock);
+		for (int iCnt = 0; iCnt < eMAX_SAMPLE; iCnt++)
+			memset(&pSample[iCnt], 0, sizeof(st_SAMPLE));
+
+		///////////////////////////////////////////////////////////////
+		// TLS에 값 셋팅
+		///////////////////////////////////////////////////////////////
+		if (false == TlsSetValue(_dwTlsIndex, (LPVOID)pSample))
+			return false;
+
+		///////////////////////////////////////////////////////////////
+		// 출력을 위해 ThreadSample 배열에도 저장
+		///////////////////////////////////////////////////////////////
+		_stProfileThread->pSample = pSample;
+		_stProfileThread->lThreadID = GetCurrentThreadId();
 	}
-
-	///////////////////////////////////////////////////////////////////
-	// 자리가 없을 경우 리턴
-	///////////////////////////////////////////////////////////////////
-	if (eMAX_THREAD_SAMPlE <= iIndex)
-		return false;
-
 
 	///////////////////////////////////////////////////////////////////
 	// 샘플 찾기
 	///////////////////////////////////////////////////////////////////
 	for (int iCnt = 0; iCnt < eMAX_SAMPLE; iCnt++)
 	{
-		if (0 == wcscmp(_stProfileThread[iIndex].stSample[iCnt].wName, pwSampleName))
+		if ((pSample[iCnt].bUseFlag) && (0 == wcscmp(pSample[iCnt].wName, pwSampleName)))
 		{
-			*pOutSample = &_stProfileThread[iIndex].stSample[iCnt];
+			*pOutSample = &pSample[iCnt];
 			break;;
 		}
-			
+
 		/////////////////////////////////////////////////////////
 		// 해당 쓰레드 안에 샘플이 없을 때
 		/////////////////////////////////////////////////////////
-		if (0 == wcscmp(_stProfileThread[iIndex].stSample[iCnt].wName, L""))
+		if (0 == wcscmp(pSample[iCnt].wName, L""))
 		{
-			StringCchPrintf(_stProfileThread[iIndex].stSample[iCnt].wName,
+			StringCchPrintf(pSample[iCnt].wName,
 				wcslen(pwSampleName)+1,
 				L"%s",
 				pwSampleName);
 			
-			_stProfileThread[iIndex].stSample[iCnt].liStartTime.QuadPart = 0;
-			_stProfileThread[iIndex].stSample[iCnt].dTotalSampleTime = 0;
+			pSample[iCnt].bUseFlag = true;
 
-			_stProfileThread[iIndex].stSample[iCnt].dMaxTime[1] = DBL_MIN;
-			_stProfileThread[iIndex].stSample[iCnt].dMinTime[1] = DBL_MAX;
+			pSample[iCnt].liStartTime.QuadPart = 0;
+			pSample[iCnt].dTotalSampleTime = 0;
 
-			_stProfileThread[iIndex].stSample[iCnt].iCallCount = 0;
+			pSample[iCnt].dMaxTime[1] = DBL_MIN;
+			pSample[iCnt].dMinTime[1] = DBL_MAX;
 
-			*pOutSample = &_stProfileThread[iIndex].stSample[iCnt];
+			pSample[iCnt].iCallCount = 0;
+
+			*pOutSample = &pSample[iCnt];
 
 			break;
 		}
 	}
 
 	return true;
-}
-
-
-///////////////////////////////////////////////////////////////////////
-// 쓰레드 샘플의 인덱스 반환
-///////////////////////////////////////////////////////////////////////
-int				CProfiler::GetThreadSampleIndex()
-{
-	int iIndex;
-
-	for (iIndex = 0; iIndex < eMAX_THREAD_SAMPlE; iIndex++)
-	{
-		///////////////////////////////////////////////////////////////
-		// 해당 스레드 찾음
-		///////////////////////////////////////////////////////////////
-		if (GetCurrentThreadId() == _stProfileThread[iIndex].lThreadID)
-
-			return iIndex;
-	}
-
-	return -1;
 }
 
 
@@ -240,11 +239,11 @@ bool			CProfiler::SaveProfile()
 		FILE_ATTRIBUTE_NORMAL, NULL);
 
 	::WriteFile(hFile,
-		L"﻿  ThreadID |           Name  |     Average  |        Min   |        Max   |      Call |\r\n",
-		90 * sizeof(WCHAR), &dwBytesWritten, NULL);
+		L"﻿ ThreadID |                Name  |           Average  |            Min   |            Max   |          Call |\r\n",
+		112 * sizeof(WCHAR), &dwBytesWritten, NULL);
 	::WriteFile(hFile,
-		L"-------------------------------------------------------------------------------------- \r\n",
-		90 * sizeof(WCHAR), &dwBytesWritten, NULL);
+		L"-------------------------------------------------------------------------------------------------------------\r\n",
+		112 * sizeof(WCHAR), &dwBytesWritten, NULL);
 
 	for (int iThCnt = 0; eMAX_THREAD_SAMPlE; iThCnt++)
 	{
@@ -253,25 +252,25 @@ bool			CProfiler::SaveProfile()
 
 		for (int iSampleCnt = 0; iSampleCnt < eMAX_THREAD_SAMPlE; iSampleCnt++)
 		{
-			if (0 == wcscmp(_stProfileThread[iThCnt].stSample[iSampleCnt].wName, L""))
+			if (false == _stProfileThread[iThCnt].pSample[iSampleCnt].bUseFlag)
 				break;
 			
 			StringCchPrintf(wBuffer,
 				sizeof(wBuffer),
-				L" %8d | %15s | %10.4f㎲ | %10.4f㎲ | %10.4f㎲ | %9d |\r\n",
+				L" %7d | %20s | %16.4f㎲ | %14.4f㎲ | %14.4f㎲ | %13d |\r\n",
 				_stProfileThread[iThCnt].lThreadID,
-				_stProfileThread[iThCnt].stSample[iSampleCnt].wName,
-				_stProfileThread[iThCnt].stSample[iSampleCnt].dTotalSampleTime 
-				/ _stProfileThread[iThCnt].stSample[iSampleCnt].iCallCount,
-				_stProfileThread[iThCnt].stSample[iSampleCnt].dMinTime[1],
-				_stProfileThread[iThCnt].stSample[iSampleCnt].dMaxTime[1],
-				_stProfileThread[iThCnt].stSample[iSampleCnt].iCallCount
+				_stProfileThread[iThCnt].pSample[iSampleCnt].wName,
+				_stProfileThread[iThCnt].pSample[iSampleCnt].dTotalSampleTime 
+				/ _stProfileThread[iThCnt].pSample[iSampleCnt].iCallCount,
+				_stProfileThread[iThCnt].pSample[iSampleCnt].dMinTime[1],
+				_stProfileThread[iThCnt].pSample[iSampleCnt].dMaxTime[1],
+				_stProfileThread[iThCnt].pSample[iSampleCnt].iCallCount
 				);
 			::WriteFile(hFile, wBuffer, wcslen(wBuffer) * sizeof(WCHAR), &dwBytesWritten, NULL);
 		}
 		::WriteFile(hFile,
-			L"-------------------------------------------------------------------------------------- ",
-			87 * sizeof(WCHAR), &dwBytesWritten, NULL);
+			L"------------------------------------------------------------------------------------------------------------\r\n",
+			111 * sizeof(WCHAR), &dwBytesWritten, NULL);
 	}
 
 	return true;

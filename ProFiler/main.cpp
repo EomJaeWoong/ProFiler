@@ -16,16 +16,14 @@ void test()
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-	CProfiler *pProfile = new CProfiler();
+	CProfiler *pProfile = CProfiler::GetInstance();
 	char chControlKey;
 
 	for (int iCnt = 0; iCnt < 20000; iCnt++)
 	{
-		pProfile->ProfileBegin(L"SleepSleepSleepSleep");
+		pProfile->ProfileBegin(L"Sleep");
 		test();
-		pProfile->ProfileEnd(L"SleepSleepSleepSleep");
-
-
+		pProfile->ProfileEnd(L"Sleep");
 	}
 
 	pProfile->SaveProfile();
