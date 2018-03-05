@@ -29,7 +29,7 @@ bool			ProfileInit()
 	// 타이머 값 얻기
 	///////////////////////////////////////////////////////////////////
 	QueryPerformanceFrequency(&_IFrequency);
-	_dMicroFrequency = (double)_IFrequency.QuadPart / 1000000;
+	_dMicroFrequency = (double)_IFrequency.QuadPart / (double)1000000;
 
 
 	for (int iCnt = 0; iCnt < eMAX_THREAD_SAMPlE; iCnt++)
@@ -127,7 +127,9 @@ bool			ProfileEnd(WCHAR *pwSampleName)
 	///////////////////////////////////////////////////////////////////
 	// 콜 횟수 증가
 	///////////////////////////////////////////////////////////////////
-	pSample->iCallCount++;
+	pSample->lCallCount++;
+
+	pSample->liStartTime.QuadPart = 0;
 
 	return true;
 }
@@ -165,8 +167,16 @@ bool			GetSample(WCHAR *pwSampleName, st_SAMPLE **pOutSample)
 		///////////////////////////////////////////////////////////////
 		// 출력을 위해 ThreadSample 배열에도 저장
 		///////////////////////////////////////////////////////////////
-		_stProfileThread->pSample = pSample;
-		_stProfileThread->lThreadID = GetCurrentThreadId();
+		for (int iCnt = 0; iCnt < eMAX_THREAD_SAMPlE; iCnt++)
+		{
+			if ((-1 == _stProfileThread[iCnt].lThreadID) &&
+				(nullptr == _stProfileThread[iCnt].pSample))
+			{
+				_stProfileThread[iCnt].pSample = pSample;
+				_stProfileThread[iCnt].lThreadID = GetCurrentThreadId();
+				break;
+			}
+		}
 	}
 
 	///////////////////////////////////////////////////////////////////
@@ -195,10 +205,13 @@ bool			GetSample(WCHAR *pwSampleName, st_SAMPLE **pOutSample)
 			pSample[iCnt].liStartTime.QuadPart = 0;
 			pSample[iCnt].dTotalSampleTime = 0;
 
-			pSample[iCnt].dMaxTime[1] = DBL_MIN;
+			pSample[iCnt].dMaxTime[0] = 0;
+			pSample[iCnt].dMinTime[0] = DBL_MAX;
+
+			pSample[iCnt].dMaxTime[1] = 0;
 			pSample[iCnt].dMinTime[1] = DBL_MAX;
 
-			pSample[iCnt].iCallCount = 0;
+			pSample[iCnt].lCallCount = 0;
 
 			*pOutSample = &pSample[iCnt];
 
@@ -240,7 +253,7 @@ bool			SaveProfile()
 	///////////////////////////////////////////////////////////////////
 	hFile = ::CreateFile(fileName,
 		GENERIC_WRITE,
-		FILE_SHARE_WRITE,
+		FILE_SHARE_WRITE | FILE_SHARE_DELETE | FILE_SHARE_READ,
 		NULL,
 		CREATE_ALWAYS,
 		FILE_ATTRIBUTE_NORMAL, NULL);
@@ -250,7 +263,7 @@ bool			SaveProfile()
 		112 * sizeof(WCHAR), &dwBytesWritten, NULL);
 	::WriteFile(hFile,
 		L"-------------------------------------------------------------------------------------------------------------\r\n",
-		112 * sizeof(WCHAR), &dwBytesWritten, NULL);
+		111 * sizeof(WCHAR), &dwBytesWritten, NULL);
 
 	for (int iThCnt = 0; eMAX_THREAD_SAMPlE; iThCnt++)
 	{
@@ -264,19 +277,19 @@ bool			SaveProfile()
 			
 			StringCchPrintf(wBuffer,
 				sizeof(wBuffer),
-				L" %7d | %20s | %16.4f㎲ | %14.4f㎲ | %14.4f㎲ | %13d |\r\n",
+				L"%9d | %20s | %16.4f㎲ | %14.4f㎲ | %14.4f㎲ | %13d |\r\n",
 				_stProfileThread[iThCnt].lThreadID,
 				_stProfileThread[iThCnt].pSample[iSampleCnt].wName,
 				_stProfileThread[iThCnt].pSample[iSampleCnt].dTotalSampleTime 
-				/ _stProfileThread[iThCnt].pSample[iSampleCnt].iCallCount,
+				/ _stProfileThread[iThCnt].pSample[iSampleCnt].lCallCount,
 				_stProfileThread[iThCnt].pSample[iSampleCnt].dMinTime[1],
 				_stProfileThread[iThCnt].pSample[iSampleCnt].dMaxTime[1],
-				_stProfileThread[iThCnt].pSample[iSampleCnt].iCallCount
+				_stProfileThread[iThCnt].pSample[iSampleCnt].lCallCount
 				);
 			::WriteFile(hFile, wBuffer, wcslen(wBuffer) * sizeof(WCHAR), &dwBytesWritten, NULL);
 		}
 		::WriteFile(hFile,
-			L"------------------------------------------------------------------------------------------------------------\r\n",
+			L"-------------------------------------------------------------------------------------------------------------\r\n",
 			111 * sizeof(WCHAR), &dwBytesWritten, NULL);
 	}
 

@@ -27,6 +27,13 @@ int _tmain(int argc, _TCHAR* argv[])
 		PRO_END(L"Sleep");
 	}
 
+
+	for (int iCnt = 0; iCnt < 20000; iCnt++)
+	{
+		PRO_BEGIN(L"Sleep2");
+		test();
+		PRO_END(L"Sleep2");
+	}
 	SaveProfile();
 
 	return 0;

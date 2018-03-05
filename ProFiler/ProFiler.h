@@ -31,7 +31,7 @@ struct st_SAMPLE
 	double				dMaxTime[2];
 	double				dMinTime[2];
 
-	int					iCallCount;
+	unsigned long		lCallCount;
 };
 
 ///////////////////////////////////////////////////////////////////////
